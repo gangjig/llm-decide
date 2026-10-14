@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llm-decide"
+version = "0.1.0"
+description = "Typed decision commands for the llm CLI: yes/no, choice, and score with probabilities, returned as clean JSON"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "Gang Ji" },
+]
+keywords = ["llm", "cli", "decisions", "agents", "llm-plugin", "json"]
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "llm",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+]
+
+[project.entry-points."llm"]
+llm_decide = "llm_decide"
+
+[project.urls]
+Homepage = "https://github.com/gangjig/llm-decide"
+Repository = "https://github.com/gangjig/llm-decide"
+
+[tool.setuptools]
+py-modules = ["llm_decide"]
