@@ -122,6 +122,27 @@ pytest
 
 Tests use a fake model with canned responses, so the suite runs fully offline with no API keys.
 
+## Build your own
+
+This repository is small enough to regenerate from a prompt. Paste the
+following into an LLM and it should produce a closely similar project:
+
+> Write a plugin for Simon Willison's llm command-line tool that lets
+> the user ask a model for a typed decision instead of a paragraph of
+> prose, in three primitives: a yes/no answer with a probability, a
+> choice from a user-defined list of options with a probability, and a
+> numeric score between 0 and 1, each returned as clean machine-readable
+> JSON with a short reason. The results pipe straight into jq, shell
+> scripts, or the next step of an agent pipeline, with a consistent
+> output shape across all three decision types. Because model output is
+> sloppy, the plugin validates and normalizes whatever comes back
+> (stripping code fences, extracting a JSON object from surrounding
+> prose, coercing probabilities into range, and rejecting a choice that
+> is not one of the offered options) and retries once with a stricter
+> prompt before failing loudly. The design principle is validation over
+> trust: a loud error is better than a quietly wrong answer flowing into
+> an automated decision.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
