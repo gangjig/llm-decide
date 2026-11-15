@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "llm-decide"
-version = "0.1.0"
-description = "Typed decision commands for the llm CLI: yes/no, choice, and score with probabilities, returned as clean JSON"
+version = "0.2.0"
+description = "Typed decision commands for the llm CLI: yes/no, choice, score, and criteria with probabilities, returned as clean JSON"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }

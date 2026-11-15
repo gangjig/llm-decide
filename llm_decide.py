@@ -2,11 +2,15 @@
 
 Instead of asking a model a question and scraping its prose for an answer,
 `llm decide` asks for a *decision* — a yes/no with a probability, a choice
-from a fixed list, or a score — and prints clean, machine-readable JSON.
+from a fixed list, a score, or a judgment split into atomic yes/no
+criteria — and prints clean, machine-readable JSON.
 
     llm decide yes-no "Is this ticket a billing issue?" --context "..."
     llm decide choice "Which queue?" --options billing,tech,account
     llm decide score "How severe is this bug?" --context "..."
+    llm decide criteria "Is this reply good?" \
+        --criterion "Does it state the amount?" \
+        --criterion "Does it apologize?"
 
 The plugin prompts the model for a strict JSON object, then validates and
 normalizes whatever comes back (markdown fences stripped, probabilities
@@ -21,7 +25,7 @@ import sys
 import click
 import llm
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 _JSON_RULES = (
     "Respond with a single JSON object and nothing else — no markdown, "
@@ -80,6 +84,22 @@ def _score_prompt(question, context):
         '- "reason": one short sentence explaining the score\n\n'
         "{}"
     ).format(question, _context_block(context), _JSON_RULES)
+
+
+def _criterion_prompt(question, criterion, context):
+    return (
+        "Answer the following yes/no question. It is one of several "
+        "independent criteria for judging the overall question below — "
+        "answer only this criterion, on its own merits.\n\n"
+        "Overall question: {}\n\n"
+        "Criterion: {}{}\n\n"
+        "Return JSON with exactly these fields:\n"
+        '- "answer": true or false\n'
+        '- "probability": your confidence that the answer is correct, '
+        "a number between 0 and 1\n"
+        '- "reason": one short sentence explaining the answer\n\n'
+        "{}"
+    ).format(question, criterion, _context_block(context), _JSON_RULES)
 
 
 def _retry_prompt(original_prompt):
@@ -196,6 +216,38 @@ def _parse_score(text):
     }
 
 
+def _aggregate_criteria(results):
+    """Aggregate per-criterion yes/no judgments into one verdict.
+
+    Each criterion contributes its probability of being satisfied: the
+    stated probability for a "yes" answer, one minus it for a "no" answer
+    (the probability is the model's confidence that its answer is
+    correct). The aggregate score is the mean of those contributions,
+    and the verdict is "yes" when the score is >= 0.5. Every criterion
+    is weighted equally.
+    """
+    if not results:
+        raise ValueError("no criteria to aggregate")
+    total = len(results)
+    yes_count = sum(1 for r in results if r["answer"] == "yes")
+    mean_probability = sum(r["probability"] for r in results) / total
+    score = (
+        sum(
+            r["probability"] if r["answer"] == "yes" else 1.0 - r["probability"]
+            for r in results
+        )
+        / total
+    )
+    return {
+        "yes_count": yes_count,
+        "total": total,
+        "yes_fraction": yes_count / total,
+        "mean_probability": mean_probability,
+        "score": score,
+        "verdict": "yes" if score >= 0.5 else "no",
+    }
+
+
 # ---------------------------------------------------------------------------
 # Model interaction
 # ---------------------------------------------------------------------------
@@ -244,7 +296,7 @@ def _emit(result):
 
 @click.group()
 def decide():
-    """Ask a model for a typed decision (yes/no, choice, score) as JSON."""
+    """Ask a model for a typed decision (yes/no, choice, score, criteria) as JSON."""
 
 
 @decide.command(name="yes-no")
@@ -298,6 +350,48 @@ def score(question, context, model):
         _parse_score,
     )
     _emit(result)
+
+
+@decide.command(name="criteria")
+@click.argument("question")
+@click.option("--criterion", "criteria", multiple=True,
+              help="An atomic yes/no sub-question. Repeat for each criterion.")
+@click.option("--context", default=None, help="Context for the question. "
+              "If omitted and stdin is piped, the context is read from stdin.")
+@click.option("-m", "--model", default=None,
+              help="Model to use (defaults to the llm default model).")
+def criteria(question, criteria, context, model):
+    """Judge a QUESTION against atomic yes/no CRITERIA, then aggregate.
+
+    Each criterion gets its own model call, judged independently; the
+    output shows every per-criterion result plus an aggregate verdict.
+    """
+    crits = [c.strip() for c in criteria if c.strip()]
+    if not crits:
+        raise click.UsageError("at least one --criterion is required")
+    context = _resolve_context(context)
+    results = []
+    for index, criterion in enumerate(crits, start=1):
+        try:
+            parsed = _ask(
+                model,
+                _criterion_prompt(question, criterion, context),
+                _parse_yes_no,
+            )
+        except DecideError as exc:
+            raise DecideError(
+                "Criterion {} of {} ({!r}) failed: {}".format(
+                    index, len(crits), criterion, exc
+                )
+            ) from exc
+        results.append({"criterion": criterion, **parsed})
+    _emit(
+        {
+            "question": question,
+            "criteria": results,
+            "aggregate": _aggregate_criteria(results),
+        }
+    )
 
 
 @llm.hookimpl

@@ -12,6 +12,7 @@ from click.testing import CliRunner
 import llm_decide
 from llm_decide import (
     DecideError,
+    _aggregate_criteria,
     _coerce_probability,
     _extract_json,
     _parse_score,
@@ -158,7 +159,7 @@ def test_parse_score():
 
 
 def test_register_commands_group_shape():
-    assert set(decide.commands) == {"yes-no", "choice", "score"}
+    assert set(decide.commands) == {"yes-no", "choice", "score", "criteria"}
 
 
 def test_yes_no_happy_path(install_model):
@@ -279,3 +280,155 @@ def test_ask_raises_decide_error_type(install_model):
     install_model("junk", "junk")
     with pytest.raises(DecideError):
         llm_decide._ask(None, "prompt", _parse_yes_no)
+
+
+# ---------------------------------------------------------------------------
+# criteria command
+# ---------------------------------------------------------------------------
+
+CRITERIA_RESPONSES = [
+    '{"answer": true, "probability": 0.9, "reason": "It names the amount."}',
+    '{"answer": true, "probability": 0.8, "reason": "It gives a timeline."}',
+    '{"answer": false, "probability": 0.7, "reason": "No apology present."}',
+]
+
+CRITERIA_FLAGS = [
+    "--criterion",
+    "Does it state the refund amount?",
+    "--criterion",
+    "Does it give a timeline?",
+    "--criterion",
+    "Does it apologize?",
+]
+
+
+def test_criteria_happy_path(install_model):
+    install_model(*CRITERIA_RESPONSES)
+    result = CliRunner().invoke(
+        decide,
+        ["criteria", "Is this support reply good?", *CRITERIA_FLAGS,
+         "--context", "We will refund $12 within 5 days."],
+    )
+    assert result.exit_code == 0, combined_output(result)
+    data = json.loads(result.output)
+    assert data["question"] == "Is this support reply good?"
+    assert [c["criterion"] for c in data["criteria"]] == [
+        "Does it state the refund amount?",
+        "Does it give a timeline?",
+        "Does it apologize?",
+    ]
+    assert [c["answer"] for c in data["criteria"]] == ["yes", "yes", "no"]
+    assert [c["probability"] for c in data["criteria"]] == [0.9, 0.8, 0.7]
+    assert data["criteria"][0]["reason"] == "It names the amount."
+    agg = data["aggregate"]
+    assert agg["yes_count"] == 2
+    assert agg["total"] == 3
+    assert agg["yes_fraction"] == pytest.approx(2 / 3)
+    assert agg["mean_probability"] == pytest.approx(0.8)
+    # Score: (0.9 + 0.8 + (1 - 0.7)) / 3 = 2.0 / 3
+    assert agg["score"] == pytest.approx(2 / 3)
+    assert agg["verdict"] == "yes"
+
+
+def test_criteria_verdict_uses_score_not_majority(install_model):
+    # One yes at 0.6, one no at 0.9: the yes fraction is 0.5, but the
+    # score (0.6 + (1 - 0.9)) / 2 = 0.35 is below 0.5, so "no".
+    install_model(
+        '{"answer": true, "probability": 0.6, "reason": "r"}',
+        '{"answer": false, "probability": 0.9, "reason": "r"}',
+    )
+    result = CliRunner().invoke(
+        decide,
+        ["criteria", "Q?", "--criterion", "A?", "--criterion", "B?"],
+    )
+    assert result.exit_code == 0, combined_output(result)
+    agg = json.loads(result.output)["aggregate"]
+    assert agg["yes_fraction"] == pytest.approx(0.5)
+    assert agg["score"] == pytest.approx(0.35)
+    assert agg["verdict"] == "no"
+
+
+def test_criteria_one_call_per_criterion(install_model):
+    fake, _ = install_model(*CRITERIA_RESPONSES)
+    result = CliRunner().invoke(
+        decide,
+        ["criteria", "Is this reply good?", *CRITERIA_FLAGS,
+         "--context", "Refund context here"],
+    )
+    assert result.exit_code == 0, combined_output(result)
+    assert len(fake.prompts) == 3
+    criteria = [
+        "Does it state the refund amount?",
+        "Does it give a timeline?",
+        "Does it apologize?",
+    ]
+    for prompt, criterion in zip(fake.prompts, criteria):
+        assert criterion in prompt
+        assert "Is this reply good?" in prompt
+        assert "Refund context here" in prompt
+
+
+def test_criteria_requires_at_least_one_criterion():
+    result = CliRunner().invoke(decide, ["criteria", "Is this good?"])
+    assert result.exit_code == 2
+    assert "at least one --criterion" in combined_output(result)
+
+
+def test_criteria_blank_criterion_rejected():
+    result = CliRunner().invoke(
+        decide, ["criteria", "Q?", "--criterion", "   "]
+    )
+    assert result.exit_code == 2
+    assert "at least one --criterion" in combined_output(result)
+
+
+def test_criteria_invalid_answer_errors_and_names_criterion(install_model):
+    install_model(
+        '{"answer": true, "probability": 0.9, "reason": "r"}',
+        '{"answer": "maybe", "probability": 0.5, "reason": "r"}',
+        '{"answer": "maybe", "probability": 0.5, "reason": "r"}',
+    )
+    result = CliRunner().invoke(
+        decide,
+        ["criteria", "Q?", "--criterion", "First?", "--criterion", "Second?"],
+    )
+    assert result.exit_code == 1
+    output = combined_output(result)
+    assert "Could not get a valid decision" in output
+    assert "Second?" in output
+    # No partial output: the successful first criterion is not printed.
+    assert '"criteria"' not in output
+
+
+def test_aggregate_criteria_all_yes():
+    agg = _aggregate_criteria(
+        [
+            {"answer": "yes", "probability": 1.0, "reason": ""},
+            {"answer": "yes", "probability": 0.5, "reason": ""},
+        ]
+    )
+    assert agg == {
+        "yes_count": 2,
+        "total": 2,
+        "yes_fraction": 1.0,
+        "mean_probability": 0.75,
+        "score": 0.75,
+        "verdict": "yes",
+    }
+
+
+def test_aggregate_criteria_tie_is_yes():
+    # A score of exactly 0.5 verdicts "yes" (the rule is >= 0.5).
+    agg = _aggregate_criteria(
+        [
+            {"answer": "yes", "probability": 0.5, "reason": ""},
+            {"answer": "no", "probability": 0.5, "reason": ""},
+        ]
+    )
+    assert agg["score"] == pytest.approx(0.5)
+    assert agg["verdict"] == "yes"
+
+
+def test_aggregate_criteria_empty_raises():
+    with pytest.raises(ValueError):
+        _aggregate_criteria([])
