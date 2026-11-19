@@ -27,7 +27,7 @@ That output pipes straight into `jq`, a shell script, or the next step of an age
 llm install llm-decide
 ```
 
-Requires Python 3.10+ and an `llm` installation with at least one model configured (an API key for a hosted model, or a local model plugin — `llm-decide` works with any model `llm` can talk to).
+Requires Python 3.11+ and an `llm` installation with at least one model configured (an API key for a hosted model, or a local model plugin — `llm-decide` works with any model `llm` can talk to).
 
 ## Usage
 
